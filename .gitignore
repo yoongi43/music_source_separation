@@ -1,0 +1,5 @@
+lightning_logs/
+ckpt/
+temp/
+wandb/
+result/
