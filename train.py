@@ -46,7 +46,7 @@ class Solver:
         else:
             self.augments = nn.Identity().to(device)
         self.model.to(device)
-        
+        self.loss_fn = nn.L1Loss(reduction='sum')
     def train(self):
         start_epoch = self.args.start_epoch+1 if self.args.resume else 0
         for epoch in range(start_epoch, self.args.max_epochs):
@@ -89,8 +89,8 @@ class Solver:
             with torch.cuda.amp.autocast():
                 est_spec, est_wav = self.model(mix_wav) # est wav: (b c t), est_spec: (b c f t ri)
                 
-                loss_spec = F.l1_loss(est_spec, target_spec)
-                loss_time = F.l1_loss(est_wav, target_wav)
+                loss_spec = self.loss_fn(est_spec, target_spec)
+                loss_time = self.loss_fn(est_wav, target_wav)
                 loss_total = self.args.lambda_spec*loss_spec + (1-self.args.lambda_spec)*loss_time
                 
             """ METRICS """ 
