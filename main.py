@@ -32,7 +32,7 @@ WTD:
 def parse_args():
     parser = argparse.ArgumentParser()
     """Model Configs (BSRNN) """
-    parser.add_argument('--model', type=str, choices=['bsrnn', 'bsconformer', 'bsrnn_skip'])
+    parser.add_argument('--model', type=str, choices=['bsrnn', 'bsconformer', 'bsrnn_skip', 'bsrnn_overlap'])
     parser.add_argument('--target-stem', type=str, default='vocals', choices=['drums', 'bass', 'other', 'vocals'])
     # parser.add_argument('--sr', type=int, default=44100)
     parser.add_argument('--n-fft', type=int, default=2048)
@@ -41,13 +41,13 @@ def parse_args():
     
     parser.add_argument('--bands', type=int, nargs='+', default=[1000, 4000, 8000, 16000, 20000])
     parser.add_argument('--num-subbands', type=int, nargs='+', default=[10, 12, 8, 8, 2, 1])
-    parser.add_argument('--num-band-seq-module', type=int, default=6) # 12
+    parser.add_argument('--num-band-seq-module', type=int, default=12) # 12
     
     """Training setup"""
+    parser.add_argument('--batch-size', type=int, default=8)  # original: gpu당 2개
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--lr-decay', type=float, default=0.98)
     parser.add_argument('--lambda-spec', type=float, default=0.5)
-    parser.add_argument('--batch-size', type=int, default=8)  # original: gpu당 2개
     parser.add_argument('--valid-per', type=int, default=5)
     parser.add_argument('--ckpt-per', type=int, default=5)
     parser.add_argument('--max-epochs', type=int, default=100)
@@ -192,6 +192,7 @@ def load_model(args):
                       sr=args.sr,
                       n_fft=args.n_fft,
                       hop_length=args.hop_length,
+                      channels=args.channels,
                       num_band_seq_module=args.num_band_seq_module,
                       bands=args.bands,
                       num_subbands=args.num_subbands)
@@ -202,6 +203,17 @@ def load_model(args):
                             sr=args.sr,
                             n_fft=args.n_fft,
                             hop_length=args.hop_length,
+                            channels=args.channels,
+                            num_band_seq_module=args.num_band_seq_module,
+                            bands=args.bands,
+                            num_subbands=args.num_subbands)
+    elif args.model=='bsrnn_overlap':
+        from bsrnn.model2 import BSRNN_Overlap
+        model = BSRNN_Overlap(target_stem=args.target_stem,
+                            sr=args.sr,
+                            n_fft=args.n_fft,
+                            hop_length=args.hop_length,
+                            channels=args.channels,
                             num_band_seq_module=args.num_band_seq_module,
                             bands=args.bands,
                             num_subbands=args.num_subbands)
