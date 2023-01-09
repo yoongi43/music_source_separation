@@ -37,6 +37,7 @@ def parse_args():
     # parser.add_argument('--sr', type=int, default=44100)
     parser.add_argument('--n-fft', type=int, default=2048)
     parser.add_argument('--hop-length', type=int, default=512)
+    parser.add_argument('--channels', type=int, default=1)  # mono:1, stereo:2
     
     parser.add_argument('--bands', type=int, nargs='+', default=[1000, 4000, 8000, 16000, 20000])
     parser.add_argument('--num-subbands', type=int, nargs='+', default=[10, 12, 8, 8, 2, 1])
@@ -90,6 +91,7 @@ def main(args):
         cfg_dmcs = yaml.load(f, Loader=yaml.FullLoader)
     # args_dset = dotdict(args_dmcs['dset'])
     cfg_dmcs['dset']['musdb'] = args.data_dir
+    cfg_dmcs['dset']['channels'] = args.channels
     cfg_dmcs = DotConfig(cfg_dmcs)
     args.sr = cfg_dmcs.dset.musdb_samplerate
     
@@ -180,6 +182,7 @@ def load_model(args):
                       sr=args.sr,
                       n_fft=args.n_fft,
                       hop_length=args.hop_length,
+                      channels=args.channels,
                       num_band_seq_module=args.num_band_seq_module,
                       bands=args.bands,
                       num_subbands=args.num_subbands)
