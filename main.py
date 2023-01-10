@@ -54,7 +54,7 @@ def parse_args():
     # parser.add_argument('--gpus', type=int, nargs='+', default=[0, 1, 2, 3])
     parser.add_argument('--gpus', type=int, nargs='+', default=[0, 1, 2, 3, 4, 5, 6, 7])  # original : 8개
     # parser.add_argument('--ckpt-dir', type=str, default='ckpt/')
-    parser.add_argument('--num-workers', type=int, default=32)
+    parser.add_argument('--num-workers', type=int, default=16)
     
     """ Dataset """
     parser.add_argument('--data-dir', type=str, default='/data1/yoongi/musdb/')

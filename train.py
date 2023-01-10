@@ -12,6 +12,7 @@ import random
 import os ; opj=os.path.join
 from glob import glob
 from natsort import natsorted
+import soundfile as sf
 
 class Solver:
     def __init__(self,
@@ -46,7 +47,9 @@ class Solver:
         else:
             self.augments = nn.Identity().to(device)
         self.model.to(device)
-        self.loss_fn = nn.L1Loss(reduction='sum')
+        # self.loss_fn = nn.L1Loss(reduction='sum')
+        self.loss_fn = nn.L1Loss(reduction='mean')
+        
     def train(self):
         start_epoch = self.args.start_epoch+1 if self.args.resume else 0
         for epoch in range(start_epoch, self.args.max_epochs):
@@ -98,8 +101,10 @@ class Solver:
             metrics_results = cal_metrics(ref=target_wav[0][None], est=est_wav[0][None], sr=self.args.sr, chunks=1)
             csdr = metrics_results['csdr']
             usdr = metrics_results['usdr']
+            # nsdr = metrics_results['nsdr']
             metrics['csdr']+=list(csdr)
             metrics['usdr']+=list(usdr)
+            # metrics['nsdr']+=list(nsdr)
             
             lr_cur = self.optimizer.state_dict()['param_groups'][0]['lr']
             
@@ -121,7 +126,7 @@ class Solver:
             if self.args.debug:
                 print('loss_spec: ', loss_spec.item(), 'loss_time: ', loss_time.item(), 'loss_total: ', loss_total.item(),
                       'cur_lr: ', lr_cur, 'epoch: ', epoch, 
-                    #   'csdr: ', csdr, 'usdr: ', usdr
+                      'csdr: ', csdr, 'usdr: ', usdr
                       )
                 if idx>2:
                     break
@@ -137,8 +142,9 @@ class Solver:
             
     def valid_epoch(self, epoch):
         self.model.eval()
-        # if epoch==0:
-        #     return 
+        if not self.args.debug:
+            if epoch==0:
+                return 
         with torch.no_grad():
             metrics=dict(csdr=[], usdr=[])
             random_idx = random.sample(list(range(len(self.valid_loader))), 3)
@@ -172,6 +178,16 @@ class Solver:
             if not self.args.debug:
                 wandb.log({'valid metric csdr epoch': np.mean(metrics['csdr']).item(),
                         'valid metric usdr epoch': np.mean(metrics['usdr']).item()})
+                
+            target_wav = rearrange(target_wav[0], 'c t -> t c').detach().cpu().numpy()
+            est_wav = rearrange(est_wav[0], 'c t -> t c').detach().cpu().numpy()
+            if not self.args.debug:
+                wandb.log({"Target sample":wandb.Audio(target_wav, sample_rate=self.args.sr)})
+                wandb.log({"Estimated sample": wandb.Audio(est_wav, sample_rate=self.args.sr)})
+            
+            
+            
+            
                     
                 
                 

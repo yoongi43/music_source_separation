@@ -24,6 +24,8 @@ def new_sdr(references, estimates):
     # assert estimates.dim() == 4
     assert references.dim()==3
     assert estimates.dim()==3
+    # assert len(references.shape)==3
+    # assert len(estimates.shape)==3
     delta = 1e-7  # avoid numerical errors
     num = th.sum(th.square(references), dim=(-2, -1))
     den = th.sum(th.square(references - estimates), dim=(-2, -1))
@@ -48,9 +50,23 @@ def museval_sdr(ref, est, sr=44100, chunks=1):
     sdrs = []
     for b in range(batch_size):  # 이게 더 빠름
         sdr, _, _, _ = museval.evaluate(references=clean[b][None], estimates=est[b][None], win=win, hop=hop, padding=True)
+        sdr = np.nanmedian(sdr)
         sdrs.append(sdr)
-        
+    
     # msdr, i, j, k = museval.evaluate(references=a, estimates=n, win=1*sr, hop=1*sr, padding=True)
+    return sdrs
+
+def museval_demucs(ref, est, sr=44100, chunks=1):
+    scores = museval.metrics.bss_eval(
+        reference_sources=ref,
+        estimated_sources=est,
+        compute_permutation=False,
+        window=sr*chunks,
+        hop=sr*chunks,
+        framewise_filters=False,
+        bsseval_sources_version=False
+    )
+    sdrs = scores[0]
     return sdrs
 
 def cmgan_snr(clean_speech, processed_speech, sample_rate=None):
@@ -62,7 +78,14 @@ def cmgan_snr(clean_speech, processed_speech, sample_rate=None):
     processed_length = processed_speech.shape[-2]
     if clean_length != processed_length:
         raise ValueError('Both Speech Files must be same length.')
-    overall_snr = 10 * np.log10(np.sum(np.square(clean_speech), axis=(-2, -1))+1e-10 / (np.sum(np.square(clean_speech - processed_speech), axis=(-2, -1))+1e-10))
+    eps = 1e-7
+    # overall_snr = 10 * np.log10(np.sum(np.square(clean_speech), axis=(-2, -1))/ (np.sum(np.square(clean_speech - processed_speech), axis=(-2, -1))))
+    num = np.sum(np.square(clean_speech), axis=(-2, -1))
+    den = np.sum(np.square(clean_speech - processed_speech), axis=(-2, -1))
+    num += eps
+    den += eps
+    overall_snr = 10 * np.log10(num / den)
+    
 
     # ## Global Variables
     # winlength = round(30 * sample_rate / 1000)    # window length in samples
@@ -107,6 +130,7 @@ def get_numpy(x):
 
 if __name__=="__main__":
     import soundfile as sf
+    import librosa
     batch=2
     sr=44100
     sec=6
@@ -117,20 +141,34 @@ if __name__=="__main__":
     # b = torch.randn(b, samp, c)
     start = sec*30
     
-    a, _ = sf.read('./temp/1.wav')
-    b, _ = sf.read('./temp/0.wav')
-
+    # a, _ = sf.read('./temp/1.wav')
+    # b, _ = sf.read('./temp/0.wav')
+    a, _ = librosa.load('./temp/1.wav', sr=44100, mono=True)
+    b, _ = librosa.load('./temp/0.wav', sr=44100, mono=True)
+    
     a = np.tile(a[start:start+samp], (batch, 1, 1))
     b = np.tile(b[start:start+samp], (batch, 1, 1))
-    n = np.random.randn(*a.shape)*3
+    n = np.random.randn(*a.shape)*0.05
     n = n+a
+    a = a.reshape(2, -1, 1)
+    b = b.reshape(2, -1, 1)
+    n = n.reshape(2, -1, 1)
     print(a.shape)
     print(b.shape)
     
+    dsdr = museval_demucs(ref=a, est=n, sr=sr, chunks=1)
+    print('demucs sdr: ', dsdr)
+    median = np.nanmedian(dsdr)
+    print("median:", median)
+    
+    print('############')
     # new_sdr, museval_sdr, snr
     # nsdr = new_sdr(references=a, estimates=b)
     msdr = museval_sdr(ref=a, est=n, sr=sr, chunks=1)
     print('museval sdr: ', msdr)
     cmsnr = cmgan_snr(clean_speech=a, processed_speech=n, sample_rate=sr)
-    # print('new sdr: ', nsdr)
+    nsdr = new_sdr(references=torch.from_numpy(a), estimates=torch.from_numpy(n))
+    print('new sdr: ', nsdr)
     print('cmgan snr: ', cmsnr)
+    
+    

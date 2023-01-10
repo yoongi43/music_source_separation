@@ -110,8 +110,8 @@ def cal_metrics(ref, est, sr, chunks=1):
     st = time()
     # print(target_wav.shape)  # nn.DataParallel 쓰면 다 모여서 계산됨. 
     csdr = museval_sdr(ref=target_wav, est=est_wav, sr=sr, chunks=chunks) # batch=12일때 대략 90초 걸림
-    csdr = np.median(csdr, axis=-1)
-    csdr = np.nan_to_num(csdr, nan=0.0)
+    # csdr = np.median(csdr, axis=-1)
+    # csdr = np.nan_to_num(csdr, nan=0.0)
     # print('cSDR time:' , time()-st)
     """ uSDR==SNR"""
     st = time()
@@ -123,7 +123,7 @@ def cal_metrics(ref, est, sr, chunks=1):
     # nsdr = new_sdr(references=target_wav, estimates=est)
     # nsdr = torch.nan_to_num(nsdr)
     # print('nsdr time:', nsdr)
-    
+    # nsdr = new_sdr(references=target_wav, estimates=est_wav)
     return{'csdr':csdr, 'usdr':usdr}
     
                         
