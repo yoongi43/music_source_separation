@@ -1,4 +1,5 @@
 import torch as th
+from torch import nn
 import torch
 import numpy as np
 import math
@@ -14,6 +15,12 @@ cSDR
 """
 
 EPS = 1e-10
+
+# class SNR(nn.Module):
+#     def __init__(self):
+#         super().__init__()
+#     def forward(self, ref, est):
+#         num = 
 
 def new_sdr(references, estimates):
     """

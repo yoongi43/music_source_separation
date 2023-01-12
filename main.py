@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 # from demucs.demucs.train import get_datasets2
 from demucs.demucs.wav import get_musdb_wav_datasets
-from utils import augment_modules
+from utils import augment_modules, linear2db, db2linear
 from train import Solver
 import wandb
 from datetime import datetime
@@ -41,15 +41,17 @@ def parse_args():
     
     parser.add_argument('--bands', type=int, nargs='+', default=[1000, 4000, 8000, 16000, 20000])
     parser.add_argument('--num-subbands', type=int, nargs='+', default=[10, 12, 8, 8, 2, 1])
-    parser.add_argument('--num-band-seq-module', type=int, default=12) # 12
+    parser.add_argument('--fc-dim', type=int ,default=128)
+    parser.add_argument('--num-band-seq-module', type=int, default=12) # original: 12
     
     """Training setup"""
-    parser.add_argument('--batch-size', type=int, default=8)  # original: gpu당 2개
+    parser.add_argument('--batch-size', type=int, default=16)  # original: gpu당 2개
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--lr-decay', type=float, default=0.98)
     parser.add_argument('--lambda-spec', type=float, default=0.5)
     parser.add_argument('--valid-per', type=int, default=5)
     parser.add_argument('--ckpt-per', type=int, default=5)
+    parser.add_argument('--wandb-per', type=int ,default=3)
     parser.add_argument('--max-epochs', type=int, default=100)
     # parser.add_argument('--gpus', type=int, nargs='+', default=[0, 1, 2, 3])
     parser.add_argument('--gpus', type=int, nargs='+', default=[0, 1, 2, 3, 4, 5, 6, 7])  # original : 8개
@@ -105,7 +107,7 @@ def main(args):
             save_dir = 'debug'
         else:
             args.nowstr = datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
-            save_dir = '_'.join([args.nowstr, args.run_name]) if args.run_name is not None else nowstr
+            save_dir = '_'.join([args.nowstr, args.run_name]) if args.run_name is not None else args.nowstr
         args.save_dir = opj(args.base_dir, save_dir)
         os.makedirs(args.save_dir, exist_ok=True)
         for d in ['train', 'valid', 'test', 'ckpt', 'wandb']:
@@ -183,6 +185,7 @@ def load_model(args):
                       n_fft=args.n_fft,
                       hop_length=args.hop_length,
                       channels=args.channels,
+                      fc_dim=args.fc_dim,
                       num_band_seq_module=args.num_band_seq_module,
                       bands=args.bands,
                       num_subbands=args.num_subbands)

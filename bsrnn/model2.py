@@ -110,7 +110,7 @@ class BSRNN_Skip(nn.Module):
         est_spec = torch.view_as_real(est_cspec)  # ((b c) f t ri)
         est_wav = rearrange(est_wav, '(b c) t -> b c t', c=self.channels)
         est_spec = rearrange(est_spec, '(b c) f t ri -> b c f t ri', c=self.channels)
-        return est_spec, est_wav
+        return est_spec, est_wav, torch.abs(cmask)
     
     
 class BSRNN_Overlap(nn.Module):
@@ -163,7 +163,7 @@ class BSRNN_Overlap(nn.Module):
         est_spec = torch.view_as_real(est_cspec)  # ((b c) f t ri)
         est_wav = rearrange(est_wav, '(b c) t -> b c t', c=self.channels)
         est_spec = rearrange(est_spec, '(b c) f t ri -> b c f t ri', c=self.channels)
-        return est_spec, est_wav
+        return est_spec, est_wav, torch.abs(cmask)
 
     
     
@@ -219,6 +219,7 @@ class BandSplitModule_Overlap(nn.Module):
         self.bands = np.array(_quantize_hz2bins(sr, n_fft, bands, num_subbands))  # len(self.bands)==42
         assert len(self.bands)==sum(num_subbands)+1
         self.band_intervals = self.bands[2:]-self.bands[:-2]
+        # fc_dim = fc_dim*2 # Overlap
 
         # self.ln_list = nn.ModuleList([nn.GroupNorm(1, band_interval) for band_interval in self.band_intervals])
         # self.fc_list = nn.ModuleList([nn.Linear(band_interval, fc_dim) for band_interval in self.band_intervals])
@@ -253,22 +254,40 @@ class BandSeqModelingModule_Overlap(nn.Module):
                  num_subbands=[10, 12, 8, 8, 2, 1]):
         super().__init__()
         fc_dim = channels * fc_dim
+        # fc_dim = 2*fc_dim # Overlap
         group = channels * group
-        hidden_dim = fc_dim  # BLSTM -> hiddendim = fc_dim 에서 2곱해짐
+        hidden_dim = fc_dim # BLSTM -> hiddendim = fc_dim 에서 2곱해짐
         num_total_subbands = sum(num_subbands)-1  # overlapped
-        self.blstm_seq = nn.Sequential(  # rnn across T
-            Rearrange('b n k t -> (b k) n t'),
-            nn.GroupNorm(num_groups=group, num_channels=fc_dim), # n/group
-            Rearrange('(b k) n t -> (b k) t n', k=num_total_subbands), # (batch, seq, hidden)
-            nn.LSTM(input_size=fc_dim, hidden_size=hidden_dim, batch_first=True, bidirectional=True), # out:(b, t, hidden_dim*2(bi))
+        # self.blstm_seq = nn.Sequential(  # rnn across T
+        #     Rearrange('b n k t -> (b k) n t'),
+        #     nn.GroupNorm(num_groups=group, num_channels=fc_dim), # n/group
+        #     Rearrange('(b k) n t -> (b k) t n', k=num_total_subbands), # (batch, seq, hidden)
+        #     nn.LSTM(input_size=fc_dim, hidden_size=hidden_dim, batch_first=True, bidirectional=True), # out:(b, t, hidden_dim*2(bi))
+        #     ExtractOutput(),
+        #     nn.Linear(2*hidden_dim, fc_dim),
+        #     Rearrange('(b k) t n -> b n k t', k=num_total_subbands)
+        # )
+        # self.blstm_band = nn.Sequential(  # rnn across K
+        #     Rearrange('b n k t -> (b t) n k'),
+        #     nn.GroupNorm(num_groups=group, num_channels=fc_dim),
+        #     Rearrange('b_t n k -> b_t k n'),
+        #     nn.LSTM(input_size=fc_dim, hidden_size=hidden_dim, batch_first=True, bidirectional=True),  #out: (b, k, hidden_dim*2)
+        #     ExtractOutput(),
+        #     nn.Linear(2*hidden_dim, fc_dim)
+        # )
+        self.blstm_seq = nn.Sequential(
+            Rearrange('b n k t -> b k n t'),
+            nn.GroupNorm(num_groups=num_total_subbands, num_channels=num_total_subbands),
+            Rearrange('b k n t -> (b k) t n'),
+            nn.LSTM(input_size=fc_dim, hidden_size=hidden_dim, batch_first=True, bidirectional=True),  #out: (b, k, hidden_dim*2)
             ExtractOutput(),
             nn.Linear(2*hidden_dim, fc_dim),
             Rearrange('(b k) t n -> b n k t', k=num_total_subbands)
         )
-        self.blstm_band = nn.Sequential(  # rnn across K
-            Rearrange('b n k t -> (b t) n k'),
-            nn.GroupNorm(num_groups=group, num_channels=fc_dim),
-            Rearrange('b_t n k -> b_t k n'),
+        self.blstm_band = nn.Sequential(
+            Rearrange('b n k t -> b k n t'),
+            nn.GroupNorm(num_groups=num_total_subbands, num_channels=num_total_subbands),
+            Rearrange('b k n t -> (b t) k n'),
             nn.LSTM(input_size=fc_dim, hidden_size=hidden_dim, batch_first=True, bidirectional=True),  #out: (b, k, hidden_dim*2)
             ExtractOutput(),
             nn.Linear(2*hidden_dim, fc_dim)
@@ -302,13 +321,15 @@ class MaskEstimationModule_Overlap(nn.Module):
         
         self.channels = channels
         fc_dim=fc_dim*channels
+        # fc_dim=2*fc_dim  # Overlap
         hidden_dim = 4*fc_dim # *4
         self.layer_list = nn.ModuleList([
             nn.Sequential(
                 Rearrange('b n t -> b t n'),
                 nn.LayerNorm(fc_dim),
                 nn.Linear(fc_dim, hidden_dim),
-                nn.Linear(hidden_dim, band_interval*2*channels),
+                nn.Tanh(),
+                nn.Linear(hidden_dim, band_interval*2*channels)
                 # Rearrange('b t n -> b n t')
             )
         for band_interval in self.band_intervals])
@@ -338,5 +359,4 @@ class MaskEstimationModule_Overlap(nn.Module):
             else:
                 mask_real[:, f_start:f_middle] = (mask_real[:, f_start:f_middle] + outs[i][:, :f_middle-f_start])/2
                 mask_real[:, f_middle:f_end] = mask_real[:, f_middle:f_end] + outs[i][:, f_middle-f_start:f_end-f_start]
-        print('mask real size:', mask_real.size())
         return mask_real

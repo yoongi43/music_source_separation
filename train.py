@@ -1,5 +1,6 @@
 from tqdm import tqdm
-from utils import augment_modules, adjust_seq_len, apply_model_overlap_add, cal_metrics
+from utils import augment_modules, adjust_seq_len, apply_model_overlap_add, cal_metrics, new_sdr
+from utils import get_spectrogram, rms_normalize_torch, db2linear, linear2db
 # from metrics import museval_sdr, cmgan_snr
 
 import torch.nn.functional as F
@@ -13,6 +14,9 @@ import os ; opj=os.path.join
 from glob import glob
 from natsort import natsorted
 import soundfile as sf
+import librosa
+import matplotlib.pyplot as plt
+import pyloudnorm as pyln
 
 class Solver:
     def __init__(self,
@@ -49,6 +53,7 @@ class Solver:
         self.model.to(device)
         # self.loss_fn = nn.L1Loss(reduction='sum')
         self.loss_fn = nn.L1Loss(reduction='mean')
+        self.meter = pyln.Meter(args.sr)
         
     def train(self):
         start_epoch = self.args.start_epoch+1 if self.args.resume else 0
@@ -84,17 +89,34 @@ class Solver:
             mix_wav = adjust_seq_len(mix_wav, hop_length=self.args.hop_length)
             target_wav = adjust_seq_len(target_wav, hop_length=self.args.hop_length)
             
+            """NORMALIZE"""
+            
+            ### RMS normalize
+            # mix_wav, gain = rms_normalize_torch(mix_wav, ref_dBFS=-10, return_gain=True)
+            # target_wav = target_wav * gain
+            ### LUFS normalize
+            # target_lufs = -14.
+            # loudness = self.meter.integrated_loudness(mix_wav)
+            # gain = target_lufs - loudness
+            # target_wav = target_wav * db2linear(gain)
+            # mix_wav = mix_wav * db2linear(gain)
+            #### mix_wav = pyln.normalize.loudness(mix_wav, loudness, target_lufs)
+            """Normalize"""
+            
             target_wav_ = rearrange(target_wav, 'b c t -> (b c) t')
             target_spec = \
                 torch.stft(target_wav_, n_fft=self.args.n_fft, hop_length=self.args.hop_length, window=torch.hann_window(self.args.n_fft).to(self.device), return_complex=False)
             target_spec = rearrange(target_spec, '(b c) f t ri -> b c f t ri', b=mix_wav.size(0))
             
             with torch.cuda.amp.autocast():
-                est_spec, est_wav = self.model(mix_wav) # est wav: (b c t), est_spec: (b c f t ri)
+                est_spec, est_wav, est_mask = self.model(mix_wav) # est wav: (b c t), est_spec: (b c f t ri)
                 
                 loss_spec = self.loss_fn(est_spec, target_spec)
                 loss_time = self.loss_fn(est_wav, target_wav)
+                # loss_nsdr = - new_sdr(references=target_wav, estimates=est_wav).mean()
                 loss_total = self.args.lambda_spec*loss_spec + (1-self.args.lambda_spec)*loss_time
+                # loss_total = self.args.lambda_spec*loss_spec + (1-self.args.lambda_spec)*loss_time + loss_nsdr
+                # loss_total = self.args.lambda_spec*loss_spec + (1-self.args.lambda_spec)*loss_time + torch.exp(loss_nsdr)
                 
             """ METRICS """ 
             ## 시간상 batch중에서 한개만
@@ -109,6 +131,10 @@ class Solver:
             lr_cur = self.optimizer.state_dict()['param_groups'][0]['lr']
             
             scaler.scale(loss_total).backward()
+            # clipping
+            scaler.unscale_(self.optimizer)
+            nn.utils.clip_grad.clip_grad_norm_(self.model.parameters(), max_norm=5.)
+            # 
             scaler.step(self.optimizer)
             scaler.update()
                 
@@ -118,6 +144,7 @@ class Solver:
                            'learning rate': lr_cur,
                             'train loss spec': loss_spec,
                             'train loss time': loss_time,
+                            # 'train loss nsdr': loss_nsdr,
                             'train loss total': loss_total,
                             'train metric csdr': np.mean(csdr).item(),
                             'train metric usdr': np.mean(usdr).item()
@@ -128,11 +155,29 @@ class Solver:
                       'cur_lr: ', lr_cur, 'epoch: ', epoch, 
                       'csdr: ', csdr, 'usdr: ', usdr
                       )
-                if idx>2:
-                    break
-                    
+                if idx>2: ## For Wandb debugging, unindent
+                    break          
         if self.scheduler is not None:
             self.scheduler.step()
+        
+        
+        if epoch % self.args.wandb_per==0:
+            if not self.args.debug:
+                """ Audio log"""
+                target_wav = rearrange(target_wav, 'b c t -> b t c').detach().cpu().numpy()[0]
+                est_wav = rearrange(est_wav, 'b c t -> b t c').detach().cpu().numpy()[0]
+                mix_wav = rearrange(mix_wav, 'b c t -> b t c').detach().cpu().numpy()[0]
+                est_mask = est_mask.detach().cpu().numpy()[0]
+                wandb.log({'Train target wav': wandb.Audio(target_wav, sample_rate=self.args.sr),
+                           'Train est wav': wandb.Audio(est_wav, sample_rate=self.args.sr),
+                           'Train mix wav': wandb.Audio(mix_wav, sample_rate=self.args.sr)})
+                
+                """ Spec log """
+                fig = get_spectrogram(clean=target_wav, pred=est_wav, mix=mix_wav,
+                                    mask=est_mask, sr=self.args.sr, n_fft=self.args.n_fft,
+                                    hop_length=self.args.hop_length, batch_idx=None)
+                wandb.log({'Train fig': wandb.Image(fig)})
+                plt.close(fig)
             
         # if not self.args.debug:
         #     wandb.log({'train metric csdr epoch': np.mean(metrics['csdr']).item(),
@@ -179,11 +224,12 @@ class Solver:
                 wandb.log({'valid metric csdr epoch': np.mean(metrics['csdr']).item(),
                         'valid metric usdr epoch': np.mean(metrics['usdr']).item()})
                 
-            target_wav = rearrange(target_wav[0], 'c t -> t c').detach().cpu().numpy()
-            est_wav = rearrange(est_wav[0], 'c t -> t c').detach().cpu().numpy()
-            if not self.args.debug:
-                wandb.log({"Target sample":wandb.Audio(target_wav, sample_rate=self.args.sr)})
-                wandb.log({"Estimated sample": wandb.Audio(est_wav, sample_rate=self.args.sr)})
+            # target_wav = rearrange(target_wav[0], 'c t -> t c').detach().cpu().numpy()
+            # est_wav = rearrange(est_wav[0], 'c t -> t c').detach().cpu().numpy()
+            # if not self.args.debug:
+            #     wandb.log({"Valid Target sample":wandb.Audio(target_wav, sample_rate=self.args.sr)})
+            #     wandb.log({"Valid Estimated sample": wandb.Audio(est_wav, sample_rate=self.args.sr)})
+                
             
             
             

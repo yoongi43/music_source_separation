@@ -56,7 +56,7 @@ class BSRNN(nn.Module):
         est_spec = torch.view_as_real(est_cspec)  # ((b c) f t ri)
         est_wav = rearrange(est_wav, '(b c) t -> b c t', c=self.channels)
         est_spec = rearrange(est_spec, '(b c) f t ri -> b c f t ri', c=self.channels)
-        return est_spec, est_wav
+        return est_spec, est_wav, torch.abs(cmask)
 
 """
 Modules
@@ -83,7 +83,7 @@ class BandSplitModule(nn.Module):
             nn.Sequential(
                 # nn.GroupNorm(1, band_interval),  # LayerNorm
                 ### Layernorm in F. not T.
-                Rearrange('b f t c -> b t (f c)', c=2*channels),
+                Rearrange('b f t c -> b t (f c)', c=2*channels), # 2: ri
                 nn.LayerNorm(band_interval*channels*2), # with Rearrange('b f t c -> b t (f c)')
                 # Rearrange('b f t c -> b t (f c)', c=2*channels),
                 nn.Linear(2*channels*band_interval, channels*fc_dim),
@@ -110,22 +110,40 @@ class BandSeqModelingModule(nn.Module):
                  num_subbands=[10, 12, 8, 8, 2, 1]):
         super().__init__()
         fc_dim = channels * fc_dim
-        group = channels * group
+        # group = channels * group
+        # group = sum(num_subbands)
         hidden_dim = fc_dim  # BLSTM -> hiddendim = fc_dim 에서 2곱해짐
         num_total_subbands = sum(num_subbands)
-        self.blstm_seq = nn.Sequential(  # rnn across T
-            Rearrange('b n k t -> (b k) n t'),
-            nn.GroupNorm(num_groups=group, num_channels=fc_dim), # n/group
-            Rearrange('(b k) n t -> (b k) t n', k=num_total_subbands), # (batch, seq, hidden)
-            nn.LSTM(input_size=fc_dim, hidden_size=hidden_dim, batch_first=True, bidirectional=True), # out:(b, t, hidden_dim*2(bi))
+        # self.blstm_seq = nn.Sequential(  # rnn across T
+        #     Rearrange('b n k t -> (b k) n t'),
+        #     nn.GroupNorm(num_groups=group, num_channels=fc_dim), # n/group
+        #     Rearrange('(b k) n t -> (b k) t n', k=num_total_subbands), # (batch, seq, hidden)
+        #     nn.LSTM(input_size=fc_dim, hidden_size=hidden_dim, batch_first=True, bidirectional=True), # out:(b, t, hidden_dim*2(bi))
+        #     ExtractOutput(),
+        #     nn.Linear(2*hidden_dim, fc_dim),
+        #     Rearrange('(b k) t n -> b n k t', k=num_total_subbands)
+        # )
+        # self.blstm_band = nn.Sequential(  # rnn across K
+        #     Rearrange('b n k t -> (b t) n k'),
+        #     nn.GroupNorm(num_groups=group, num_channels=fc_dim),
+        #     Rearrange('b_t n k -> b_t k n'),
+        #     nn.LSTM(input_size=fc_dim, hidden_size=hidden_dim, batch_first=True, bidirectional=True),  #out: (b, k, hidden_dim*2)
+        #     ExtractOutput(),
+        #     nn.Linear(2*hidden_dim, fc_dim)
+        # )
+        self.blstm_seq = nn.Sequential(
+            Rearrange('b n k t -> b k n t'),
+            nn.GroupNorm(num_groups=num_total_subbands, num_channels=num_total_subbands),
+            Rearrange('b k n t -> (b k) t n'),
+            nn.LSTM(input_size=fc_dim, hidden_size=hidden_dim, batch_first=True, bidirectional=True),  #out: (b, k, hidden_dim*2)
             ExtractOutput(),
             nn.Linear(2*hidden_dim, fc_dim),
             Rearrange('(b k) t n -> b n k t', k=num_total_subbands)
         )
-        self.blstm_band = nn.Sequential(  # rnn across K
-            Rearrange('b n k t -> (b t) n k'),
-            nn.GroupNorm(num_groups=group, num_channels=fc_dim),
-            Rearrange('b_t n k -> b_t k n'),
+        self.blstm_band = nn.Sequential(
+            Rearrange('b n k t -> b k n t'),
+            nn.GroupNorm(num_groups=num_total_subbands, num_channels=num_total_subbands),
+            Rearrange('b k n t -> (b t) k n'),
             nn.LSTM(input_size=fc_dim, hidden_size=hidden_dim, batch_first=True, bidirectional=True),  #out: (b, k, hidden_dim*2)
             ExtractOutput(),
             nn.Linear(2*hidden_dim, fc_dim)
@@ -183,6 +201,7 @@ class MaskEstimationModule(nn.Module):
                 Rearrange('b n t -> b t n'),
                 nn.LayerNorm(fc_dim),
                 nn.Linear(fc_dim, hidden_dim),
+                nn.Tanh(),
                 nn.Linear(hidden_dim, band_interval*2*channels),
                 # Rearrange('b t n -> b n t')
             )
